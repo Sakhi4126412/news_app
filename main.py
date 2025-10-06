@@ -1,7 +1,3 @@
-# ============================================
-# 📘 Rumor Buster Pro - NLP Phase-wise Analysis
-# ============================================
-
 import streamlit as st
 import pandas as pd
 from textblob import TextBlob
@@ -14,14 +10,13 @@ from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, classification_report
 from imblearn.over_sampling import SMOTE
 import matplotlib.pyplot as plt
-
-# ============================
-# SpaCy Auto-download & Load
-# ============================
 import spacy
 import subprocess
 import sys
 
+# ============================
+# Auto-download SpaCy model
+# ============================
 try:
     nlp = spacy.load("en_core_web_sm")
 except:
@@ -31,7 +26,7 @@ except:
 stop_words = nlp.Defaults.stop_words
 
 # ============================
-# Feature Functions
+# Feature functions
 # ============================
 def lexical_preprocess(text):
     doc = nlp(text.lower())
@@ -56,7 +51,7 @@ def pragmatic_features(text):
     return [text.count(w) for w in pragmatic_words]
 
 # ============================
-# Model Evaluation with SMOTE
+# Evaluate models with SMOTE
 # ============================
 def evaluate_models(X_features, y):
     results = {}
@@ -66,10 +61,11 @@ def evaluate_models(X_features, y):
         "Logistic Regression": LogisticRegression(max_iter=200),
         "SVM": SVC()
     }
+
     X_train, X_test, y_train, y_test = train_test_split(X_features, y, test_size=0.2, random_state=42)
 
+    smote = SMOTE(random_state=42)
     try:
-        smote = SMOTE(random_state=42)
         X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
     except:
         X_train_res, y_train_res = X_train, y_train
