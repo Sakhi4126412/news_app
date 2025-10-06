@@ -1,244 +1,163 @@
-# ============================================================
-# 🧠 Fake News Detection Dashboard - Theme Toggle Edition
-# ============================================================
-
+# ================================================================
+# 🧠 Fake News Detection App – Final Version
+# ================================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
 from imblearn.over_sampling import SMOTE
-import matplotlib.pyplot as plt
-import seaborn as sns
 import xgboost as xgb
-from streamlit_extras.metric_cards import style_metric_cards
-from streamlit_extras.let_it_rain import rain
-from streamlit_extras.switch_page_button import switch_page
+import spacy
 
-# ============================================================
-# 🎨 Streamlit Page Config
-# ============================================================
-st.set_page_config(
-    page_title="Fake News Detection Dashboard 📰",
-    page_icon="🧠",
-    layout="wide",
-)
-
-# ============================================================
-# 🌈 Sidebar: Theme Switch
-# ============================================================
-theme_mode = st.sidebar.radio("🌗 Choose Theme:", ["Light Mode", "Dark Mode"])
-dark = theme_mode == "Dark Mode"
-
-# ============================================================
-# 🎨 Dynamic CSS Styling
-# ============================================================
-if dark:
-    bg_color = "#0f172a"
-    text_color = "#f1f5f9"
-    accent = "#6366f1"
-    card_bg = "#1e293b"
-else:
-    bg_color = "#f8fafc"
-    text_color = "#1e293b"
-    accent = "#3b82f6"
-    card_bg = "#eef2ff"
-
-st.markdown(
-    f"""
-    <style>
-    body {{
-        background-color: {bg_color};
-        color: {text_color};
-    }}
-    .main-title {{
-        font-size: 42px;
-        font-weight: 800;
-        text-align: center;
-        color: {accent};
-        padding: 10px;
-        margin-bottom: 5px;
-        text-shadow: 1px 1px 4px rgba(0,0,0,0.2);
-    }}
-    .sub-title {{
-        text-align: center;
-        color: #94a3b8;
-        font-size: 18px;
-        margin-bottom: 30px;
-    }}
-    .stTextArea textarea {{
-        border-radius: 12px;
-        border: 2px solid {accent};
-        background-color: {card_bg};
-        color: {text_color};
-    }}
-    .stButton>button {{
-        background: linear-gradient(90deg, #6366f1, #3b82f6);
-        color: white;
-        border-radius: 10px;
-        border: none;
-        font-weight: 600;
-        padding: 10px 18px;
-        box-shadow: 0px 4px 10px rgba(0,0,0,0.2);
-        transition: all 0.3s ease-in-out;
-    }}
-    .stButton>button:hover {{
-        background: linear-gradient(90deg, #3b82f6, #6366f1);
-        transform: scale(1.04);
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ============================================================
-# 🌟 Title Section
-# ============================================================
-st.markdown('<div class="main-title">🧠 Fake News Detection Dashboard</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">AI-powered NLP for truth verification ⚡</div>', unsafe_allow_html=True)
-
-rain(emoji="📰", font_size=18, falling_speed=4, animation_length="infinite")
-
-# ============================================================
-# 🧹 Text Preprocessing
-# ============================================================
+# Load spaCy model
 nlp = spacy.load("en_core_web_sm")
 
+# ================================================================
+# 🧹 Text Preprocessing
+# ================================================================
 def clean_text(text):
-    text = re.sub(r"http\S+", "", str(text))
-    text = re.sub(r"[^a-zA-Z\s]", "", text.lower())
-    return re.sub(r"\s+", " ", text).strip()
+    text = str(text).lower()
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"[^a-zA-Z\s]", "", text)
+    return text
 
 def lemmatize_text(text):
     doc = nlp(text)
-    return " ".join([token.lemma_ for token in doc if not token.is_stop])
+    return " ".join([token.lemma_ for token in doc])
 
-def preprocess_pipeline(text):
-    return lemmatize_text(clean_text(text))
+def preprocess_pipeline(df, text_col):
+    df[text_col] = df[text_col].astype(str).apply(clean_text).apply(lemmatize_text)
+    return df
 
-# ============================================================
-# 📂 Upload Dataset (Left-aligned)
-# ============================================================
-left_col, right_col = st.columns([1, 2])
-with left_col:
-    uploaded_file = st.file_uploader("📁 Upload your CSV dataset", type=["csv"])
+# ================================================================
+# 🎯 Model Dictionary
+# ================================================================
+models = {
+    "Naive Bayes": MultinomialNB(),
+    "Decision Tree": DecisionTreeClassifier(),
+    "Logistic Regression": LogisticRegression(max_iter=300),
+    "SVM": SVC(probability=True),
+    "KNN": KNeighborsClassifier(),
+    "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
+    "XGBoost": xgb.XGBClassifier(use_label_encoder=False, eval_metric="mlogloss"),
+}
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.success("✅ File uploaded successfully!")
+# ================================================================
+# 🎨 Streamlit App Layout
+# ================================================================
+st.set_page_config(page_title="Fake News Detection", layout="wide")
 
-    with right_col:
-        st.subheader("📊 Dataset Preview")
-        st.dataframe(df.head(), use_container_width=True)
+st.markdown("<h1 style='text-align:center;'>🧠 Fake News Detection & Model Evaluation</h1>", unsafe_allow_html=True)
+st.markdown("---")
 
-    text_col = st.selectbox("📝 Select Text Column", df.columns)
-    label_col = st.selectbox("🏷️ Select Label Column", df.columns)
+# ================================================================
+# 🧩 Layout Columns
+# ================================================================
+left, right = st.columns([1, 2.5])
 
-    with st.spinner("⚙️ Preprocessing data..."):
-        df["clean_text"] = df[text_col].astype(str).apply(preprocess_pipeline)
-        vectorizer = TfidfVectorizer(max_features=6000, ngram_range=(1, 2))
-        X = vectorizer.fit_transform(df["clean_text"])
-        y = df[label_col]
+with left:
+    st.subheader("📂 Upload & Select Columns")
+    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        smote = SMOTE(random_state=42)
-        X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+        st.success(f"✅ Dataset Loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+        st.dataframe(df.head(3))
 
-    # ============================================================
-    # ⚙️ Model Training (Tuned)
-    # ============================================================
-    models = {
-        "Logistic Regression": LogisticRegression(max_iter=400, C=2.0),
-        "Random Forest": RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42),
-        "Naive Bayes": MultinomialNB(alpha=0.5),
-        "Decision Tree": DecisionTreeClassifier(max_depth=15, random_state=42),
-        "SVM": SVC(kernel="linear", C=2),
-        "XGBoost": xgb.XGBClassifier(eval_metric="mlogloss", n_estimators=250, learning_rate=0.1)
-    }
+        text_col = st.selectbox("📝 Select Text Column", df.columns)
+        target_col = st.selectbox("🎯 Select Target Column", df.columns)
 
-    st.subheader("🚀 Model Training Progress")
-    progress_bar = st.progress(0)
-    model_results = {}
+        if st.button("🚀 Train Models"):
+            with st.spinner("Training models... please wait ⏳"):
+                df = preprocess_pipeline(df, text_col)
+                X = df[text_col]
+                y = df[target_col]
 
-    for i, (name, model) in enumerate(models.items()):
-        model.fit(X_train_res, y_train_res)
-        preds = model.predict(X_test)
-        acc = accuracy_score(y_test, preds)
-        model_results[name] = acc
-        progress_bar.progress((i + 1) / len(models))
+                # TF-IDF Vectorization
+                vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
+                X_vec = vectorizer.fit_transform(X)
 
-    results_df = pd.DataFrame(model_results.items(), columns=["Model", "Accuracy"]).sort_values(by="Accuracy", ascending=False)
+                # Train-test split
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_vec, y, test_size=0.2, random_state=42
+                )
 
-    # ============================================================
-    # 🧾 Metrics Section
-    # ============================================================
-    st.markdown("### 🧾 Performance Summary")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🏆 Best Model", results_df.iloc[0]["Model"])
-    col2.metric("🎯 Accuracy", f"{results_df.iloc[0]['Accuracy']*100:.2f}%")
-    col3.metric("🧩 Models Tested", len(models))
-    style_metric_cards(background_color=card_bg, border_color=accent)
+                # Apply SMOTE for balancing
+                smote = SMOTE(random_state=42)
+                X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
 
-    # ============================================================
-    # 📈 Visualization
-    # ============================================================
-    st.markdown("### 📈 Model Accuracy Comparison")
-    col1, col2 = st.columns(2)
+                # Train and evaluate models
+                results = []
+                for name, model in models.items():
+                    model.fit(X_train_res, y_train_res)
+                    y_pred = model.predict(X_test)
+                    acc = accuracy_score(y_test, y_pred)
+                    results.append({"Model": name, "Accuracy": acc})
 
-    with col1:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        sns.barplot(x="Accuracy", y="Model", data=results_df, palette="viridis" if dark else "mako")
-        ax.set_title("Model Accuracy (%)")
-        st.pyplot(fig)
+                results_df = pd.DataFrame(results).sort_values(by="Accuracy", ascending=False)
+                best_model_name = results_df.iloc[0]["Model"]
+                best_acc = results_df.iloc[0]["Accuracy"]
+                best_model = models[best_model_name]
 
-    with col2:
-        fig2, ax2 = plt.subplots(figsize=(5, 5))
-        wedges, texts, autotexts = ax2.pie(
-            results_df["Accuracy"], labels=results_df["Model"],
-            autopct="%1.1f%%", startangle=90, wedgeprops=dict(width=0.35)
-        )
-        plt.title("Model Accuracy Share")
-        st.pyplot(fig2)
+                # Retrain best model on full data
+                best_model.fit(X_train_res, y_train_res)
+                y_pred_best = best_model.predict(X_test)
 
-    # ============================================================
-    # 🧪 Testing Section
-    # ============================================================
-    st.markdown("### 🧪 Test Your Own News")
-    user_input = st.text_area("✍️ Enter News Headline or Article")
+            # ================================================================
+            # 🎯 Model Evaluation (Right Column)
+            # ================================================================
+            with right:
+                st.subheader("📊 Model Evaluation")
 
-    if st.button("🔍 Predict News Type"):
-        best_model_name = results_df.iloc[0]["Model"]
-        best_model = models[best_model_name]
-        processed_input = preprocess_pipeline(user_input)
-        input_vec = vectorizer.transform([processed_input])
-        pred = best_model.predict(input_vec)[0]
+                st.markdown(f"**🏆 Best Model:** `{best_model_name}` with **Accuracy:** `{best_acc:.2%}`")
 
-        st.markdown(f"### ✅ Prediction: **{pred.upper()}**")
-        st.caption(f"Model used: {best_model_name}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("📈 Model Accuracy Comparison")
+                    fig, ax = plt.subplots(figsize=(5, 3))
+                    sns.barplot(data=results_df, x="Accuracy", y="Model", ax=ax)
+                    ax.set_title("Model Accuracy")
+                    st.pyplot(fig)
 
-    # ============================================================
-    # 📉 Confusion Matrix (Smaller, Aligned)
-    # ============================================================
-    st.markdown("### 📉 Confusion Matrix")
-    best_model_name = results_df.iloc[0]["Model"]
-    best_model = models[best_model_name]
-    y_pred_best = best_model.predict(X_test)
-    cm = confusion_matrix(y_test, y_pred_best)
+                with col2:
+                    st.subheader("📉 Confusion Matrix")
+                    cm = confusion_matrix(y_test, y_pred_best)
+                    fig, ax = plt.subplots(figsize=(3.2, 2.8))
+                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax, cbar=False)
+                    ax.set_xlabel("Predicted")
+                    ax.set_ylabel("Actual")
+                    st.pyplot(fig)
 
-    fig3, ax3 = plt.subplots(figsize=(4, 3))  # Reduced size
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", cbar=False)
-    ax3.set_xlabel("Predicted")
-    ax3.set_ylabel("Actual")
-    plt.tight_layout()
-    st.pyplot(fig3)
+                st.subheader("📋 Classification Report")
+                st.text(classification_report(y_test, y_pred_best))
 
-else:
-    st.info("👈 Upload a dataset to get started.")
+            # ================================================================
+            # 🧪 Test Your Own Text
+            # ================================================================
+            st.markdown("---")
+            st.subheader("🧪 Test Your Own Text")
+            user_input = st.text_area("Enter a news headline or paragraph to test:", height=100)
+
+            if st.button("🔍 Predict"):
+                if user_input.strip():
+                    cleaned_input = clean_text(user_input)
+                    lemmatized_input = lemmatize_text(cleaned_input)
+                    X_input = vectorizer.transform([lemmatized_input])
+                    prediction = best_model.predict(X_input)[0]
+                    st.success(f"🧾 **Prediction:** {prediction}")
+                else:
+                    st.warning("⚠️ Please enter some text to analyze.")
+    else:
+        st.warning("⬅️ Please upload a CSV file to begin analysis.")
