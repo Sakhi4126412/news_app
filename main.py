@@ -7,8 +7,7 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
-from imblearn.over_sampling import SMOTE
+from sklearn.metrics import accuracy_score
 import matplotlib.pyplot as plt
 import spacy
 import subprocess
@@ -51,7 +50,7 @@ def pragmatic_features(text):
     return [text.count(w) for w in pragmatic_words]
 
 # ============================
-# Evaluate models with SMOTE
+# Evaluate models (without SMOTE)
 # ============================
 def evaluate_models(X_features, y):
     results = {}
@@ -64,21 +63,14 @@ def evaluate_models(X_features, y):
 
     X_train, X_test, y_train, y_test = train_test_split(X_features, y, test_size=0.2, random_state=42)
 
-    smote = SMOTE(random_state=42)
-    try:
-        X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
-    except:
-        X_train_res, y_train_res = X_train, y_train
-
     for name, model in models.items():
         try:
-            model.fit(X_train_res, y_train_res)
+            model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
             acc = accuracy_score(y_test, y_pred)*100
-            results[name] = {"accuracy": round(acc,2), "model": model,
-                             "report": classification_report(y_test, y_pred, zero_division=0)}
+            results[name] = {"accuracy": round(acc,2), "model": model}
         except Exception as e:
-            results[name] = {"accuracy":0, "model":None, "report":str(e)}
+            results[name] = {"accuracy":0, "model":None, "error":str(e)}
     return results
 
 # ============================
