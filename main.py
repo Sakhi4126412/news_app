@@ -172,14 +172,3 @@ with right:
             else:
                 st.success(f"✅ Prediction: REAL NEWS")
 
-# Display instructions if no file uploaded
-elif not uploaded_file:
-    with right:
-        st.info("👈 Please upload a CSV file to begin analysis.")
-        st.markdown("""
-        ### 📋 How to use:
-        1. Upload a CSV file with text data
-        2. Select the text column and target column  
-        3. Click 'Train Models' to build classifiers
-        4. View model performance and test new text
-        """)
