@@ -1,5 +1,5 @@
 # ================================================================
-# 🧠 Fake News Detection App - Fixed Version with Error Handling
+# 🧠 Fake News Detection App - Fixed for Small Datasets
 # ================================================================
 import streamlit as st
 import pandas as pd
@@ -11,7 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from wordcloud import WordCloud
 from collections import Counter
-import sys
+from sklearn.utils import resample
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
@@ -60,13 +60,13 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         margin: 0.5rem;
     }
-    .feature-card {
-        background: white;
+    .warning-card {
+        background: linear-gradient(135deg, #ffeaa7 0%, #fab1a0 100%);
         padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 4px solid #667eea;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin: 0.5rem 0;
+        border-radius: 15px;
+        border: none;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin: 0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -79,14 +79,10 @@ def clean_text(text):
     if not isinstance(text, str):
         text = str(text)
     text = text.lower()
-    # Remove URLs
     text = re.sub(r'http\S+', '', text)
-    # Remove mentions and hashtags
     text = re.sub(r'@\w+', '', text)
     text = re.sub(r'#\w+', '', text)
-    # Remove punctuation and numbers
     text = re.sub(r'[^a-zA-Z\s]', '', text)
-    # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -99,13 +95,83 @@ def preprocess_pipeline(df, text_col):
     return df_clean
 
 # ================================================================
+# 📊 Data Validation & Balancing Functions
+# ================================================================
+def validate_dataset(df, target_col):
+    """Validate dataset for training suitability"""
+    validation_results = {
+        'is_valid': True,
+        'issues': [],
+        'class_distribution': None,
+        'min_class_size': 0
+    }
+    
+    # Check for missing values in target
+    if df[target_col].isnull().any():
+        validation_results['is_valid'] = False
+        validation_results['issues'].append("Target column contains missing values")
+    
+    # Check class distribution
+    class_dist = df[target_col].value_counts()
+    validation_results['class_distribution'] = class_dist
+    validation_results['min_class_size'] = class_dist.min()
+    
+    # Check if any class has less than 2 samples
+    if class_dist.min() < 2:
+        validation_results['is_valid'] = False
+        validation_results['issues'].append(f"One or more classes have less than 2 samples. Class distribution: {dict(class_dist)}")
+    
+    # Check if we have at least 2 classes
+    if len(class_dist) < 2:
+        validation_results['is_valid'] = False
+        validation_results['issues'].append("Need at least 2 classes for classification")
+    
+    # Check text data quality
+    text_cols = [col for col in df.columns if df[col].dtype == 'object']
+    for col in text_cols:
+        empty_texts = df[col].apply(lambda x: len(str(x).strip()) == 0).sum()
+        if empty_texts > 0:
+            validation_results['issues'].append(f"Column '{col}' has {empty_texts} empty texts")
+    
+    return validation_results
+
+def handle_imbalanced_data(df, text_col, target_col):
+    """Handle imbalanced data with basic upsampling"""
+    try:
+        # Get class distribution
+        class_dist = df[target_col].value_counts()
+        max_size = class_dist.max()
+        
+        # Upsample minority classes
+        balanced_dfs = []
+        for class_name in class_dist.index:
+            class_df = df[df[target_col] == class_name]
+            if len(class_df) < max_size:
+                # Upsample to match the majority class
+                class_df_upsampled = resample(
+                    class_df,
+                    replace=True,
+                    n_samples=max_size,
+                    random_state=42
+                )
+                balanced_dfs.append(class_df_upsampled)
+            else:
+                balanced_dfs.append(class_df)
+        
+        balanced_df = pd.concat(balanced_dfs)
+        return balanced_df.sample(frac=1, random_state=42).reset_index(drop=True)
+    
+    except Exception as e:
+        st.warning(f"Could not balance data: {str(e)}. Using original data.")
+        return df
+
+# ================================================================
 # 📊 Visualization Functions
 # ================================================================
 def create_wordcloud(texts, title):
     """Create word cloud visualization"""
     try:
-        # Filter out empty texts
-        texts = [text for text in texts if len(text) > 0]
+        texts = [text for text in texts if len(str(text).strip()) > 0]
         if not texts:
             return None
             
@@ -148,10 +214,35 @@ models = {
     "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
     "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
     "Naive Bayes": MultinomialNB(),
-    "SVM": SVC(probability=True, random_state=42),
     "Decision Tree": DecisionTreeClassifier(random_state=42),
-    "K-Nearest Neighbors": KNeighborsClassifier(),
 }
+
+def safe_train_test_split(X, y, test_size=0.2, min_samples_per_class=2):
+    """Safe train-test split that handles small datasets"""
+    try:
+        # Check if we can do stratified split
+        class_counts = pd.Series(y).value_counts()
+        can_stratify = all(count >= 2 for count in class_counts)
+        
+        if can_stratify and len(class_counts) >= 2:
+            return train_test_split(
+                X, y, 
+                test_size=test_size, 
+                random_state=42, 
+                stratify=y
+            )
+        else:
+            # Simple split without stratification
+            st.warning("Using simple train-test split (not stratified) due to small class sizes")
+            return train_test_split(
+                X, y, 
+                test_size=test_size, 
+                random_state=42
+            )
+    except Exception as e:
+        st.error(f"Error in train-test split: {str(e)}")
+        # Fallback: use all data for training
+        return X, X[:0], y, pd.Series([], dtype=y.dtype)
 
 def train_and_evaluate_models(X_train, X_test, y_train, y_test, selected_models):
     """Train and evaluate multiple models with error handling"""
@@ -162,20 +253,28 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test, selected_models)
             model = models[name]
             model.fit(X_train, y_train)
             
-            # Predictions
-            y_pred = model.predict(X_test)
-            y_pred_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
-            
-            # Metrics
-            accuracy = accuracy_score(y_test, y_pred)
-            
-            results.append({
-                'Model': name,
-                'Accuracy': accuracy,
-                'Model_Object': model,
-                'Predictions': y_pred,
-                'Probabilities': y_pred_proba
-            })
+            # Only calculate metrics if we have test data
+            if len(X_test) > 0 and len(y_test) > 0:
+                y_pred = model.predict(X_test)
+                accuracy = accuracy_score(y_test, y_pred)
+                
+                results.append({
+                    'Model': name,
+                    'Accuracy': accuracy,
+                    'Model_Object': model,
+                    'Predictions': y_pred,
+                    'Probabilities': model.predict_proba(X_test) if hasattr(model, "predict_proba") else None
+                })
+            else:
+                # No test data - just store the model
+                results.append({
+                    'Model': name,
+                    'Accuracy': 0.0,
+                    'Model_Object': model,
+                    'Predictions': [],
+                    'Probabilities': None
+                })
+                st.warning(f"Model '{name}' trained but not evaluated (no test data)")
             
         except Exception as e:
             st.warning(f"❌ Failed to train {name}: {str(e)}")
@@ -188,7 +287,7 @@ def train_and_evaluate_models(X_train, X_test, y_train, y_test, selected_models)
 # ================================================================
 st.markdown("<h1 class='main-header'>🔍 Advanced Fake News Detection System</h1>", unsafe_allow_html=True)
 
-# Initialize session state with default values
+# Initialize session state
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
 if 'trained_models' not in st.session_state:
@@ -216,11 +315,14 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## ⚙️ Configuration")
     
-    # Model settings
     st.markdown("### Model Settings")
     test_size = st.slider("Test Set Size (%)", 10, 40, 20)
     vectorizer_type = st.selectbox("Vectorization Method", ["TF-IDF", "Count Vectorizer"])
-    max_features = st.slider("Max Features", 100, 5000, 2000)
+    max_features = st.slider("Max Features", 100, 5000, 1000)
+    
+    st.markdown("### Data Handling")
+    balance_data = st.checkbox("Balance classes (upsample minority)", value=True)
+    handle_small_classes = st.checkbox("Handle small classes automatically", value=True)
     
     st.markdown("---")
     st.markdown("### 📊 Model Selection")
@@ -254,7 +356,21 @@ if app_section == "📊 Data Overview":
                 if st.button("🚀 Load Dataset", type="primary", use_container_width=True):
                     st.session_state.text_col = text_col
                     st.session_state.target_col = target_col
-                    st.success("✅ Dataset loaded successfully!")
+                    
+                    # Validate dataset
+                    validation = validate_dataset(df, target_col)
+                    
+                    if validation['is_valid']:
+                        st.success("✅ Dataset loaded and validated successfully!")
+                    else:
+                        st.warning("⚠️ Dataset has issues:")
+                        for issue in validation['issues']:
+                            st.error(issue)
+                        
+                        st.info("💡 Tips to fix:")
+                        st.write("- Ensure each class has at least 2 samples")
+                        st.write("- Remove rows with missing target values")
+                        st.write("- Check for empty text fields")
                     
             except Exception as e:
                 st.error(f"❌ Error loading file: {str(e)}")
@@ -284,35 +400,33 @@ if app_section == "📊 Data Overview":
                 """, unsafe_allow_html=True)
             
             with col3:
+                class_dist = df[target_col].value_counts()
+                min_class = class_dist.min()
                 st.markdown(f"""
                 <div class="metric-card">
-                    <h3>📝 Text Column</h3>
-                    <p style="font-size: 1.2rem; font-weight: bold; color: #2c3e50;">{text_col}</p>
+                    <h3>📈 Min Class Size</h3>
+                    <p style="font-size: 2rem; font-weight: bold; color: {'#e74c3c' if min_class < 2 else '#27ae60'};">{min_class}</p>
                 </div>
                 """, unsafe_allow_html=True)
             
             with col4:
+                empty_texts = df[text_col].apply(lambda x: len(str(x).strip()) == 0).sum()
                 st.markdown(f"""
                 <div class="metric-card">
-                    <h3>🎯 Target Column</h3>
-                    <p style="font-size: 1.2rem; font-weight: bold; color: #2c3e50;">{target_col}</p>
+                    <h3>📝 Empty Texts</h3>
+                    <p style="font-size: 2rem; font-weight: bold; color: {'#e74c3c' if empty_texts > 0 else '#27ae60'};">{empty_texts}</p>
                 </div>
                 """, unsafe_allow_html=True)
             
+            # Class distribution
+            st.markdown("### 📊 Class Distribution")
+            fig = plot_class_distribution(df[target_col])
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+            
             # Data preview
             st.markdown("### 👀 Data Preview")
-            tab1, tab2, tab3 = st.tabs(["First 5 Rows", "Last 5 Rows", "Statistics"])
-            
-            with tab1:
-                st.dataframe(df.head(), use_container_width=True)
-            
-            with tab2:
-                st.dataframe(df.tail(), use_container_width=True)
-            
-            with tab3:
-                st.dataframe(df.describe(), use_container_width=True)
-        else:
-            st.info("📁 Please upload a CSV file to get started.")
+            st.dataframe(df.head(10), use_container_width=True)
 
 # ================================================================
 # 🔧 SECTION 2: Text Preprocessing
@@ -337,13 +451,27 @@ elif app_section == "🔧 Preprocessing":
                     try:
                         # Apply preprocessing
                         processed_df = preprocess_pipeline(df, text_col)
+                        
+                        # Handle class imbalance if requested
+                        if balance_data:
+                            processed_df = handle_imbalanced_data(processed_df, 'cleaned_text', target_col)
+                            st.info("✅ Data balanced using upsampling")
+                        
                         st.session_state.processed_data = processed_df
                         
                         # Initialize vectorizer
                         if vectorizer_type == "TF-IDF":
-                            st.session_state.vectorizer = TfidfVectorizer(max_features=max_features, ngram_range=(1, 2))
+                            st.session_state.vectorizer = TfidfVectorizer(
+                                max_features=max_features, 
+                                ngram_range=(1, 2),
+                                min_df=2  # Ignore terms that appear in less than 2 documents
+                            )
                         else:
-                            st.session_state.vectorizer = CountVectorizer(max_features=max_features, ngram_range=(1, 2))
+                            st.session_state.vectorizer = CountVectorizer(
+                                max_features=max_features, 
+                                ngram_range=(1, 2),
+                                min_df=2
+                            )
                         
                         st.success("✅ Preprocessing completed!")
                         
@@ -357,12 +485,12 @@ elif app_section == "🔧 Preprocessing":
                 # Show preprocessing results
                 st.markdown("### 📋 Preprocessing Results")
                 
-                tab1, tab2 = st.tabs(["Original vs Cleaned", "Text Statistics"])
+                tab1, tab2, tab3 = st.tabs(["Text Samples", "Statistics", "Class Distribution"])
                 
                 with tab1:
                     comparison_df = pd.DataFrame({
-                        'Original Text': df[text_col].head(10),
-                        'Cleaned Text': processed_df['cleaned_text'].head(10)
+                        'Original Text': df[text_col].head(5),
+                        'Cleaned Text': processed_df['cleaned_text'].head(5)
                     })
                     st.dataframe(comparison_df, use_container_width=True)
                 
@@ -370,102 +498,20 @@ elif app_section == "🔧 Preprocessing":
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         avg_length = processed_df['text_length'].mean()
-                        st.metric("Average Text Length", f"{avg_length:.1f} chars")
+                        st.metric("Avg Text Length", f"{avg_length:.1f} chars")
                     with col2:
                         avg_words = processed_df['word_count'].mean()
-                        st.metric("Average Word Count", f"{avg_words:.1f} words")
+                        st.metric("Avg Word Count", f"{avg_words:.1f} words")
                     with col3:
-                        empty_texts = processed_df[processed_df['cleaned_text'].str.len() == 0].shape[0]
-                        st.metric("Empty Texts", empty_texts)
-            else:
-                st.info("🔄 Click 'Apply Preprocessing' to clean and prepare your text data.")
-
-# ================================================================
-# 📈 SECTION 3: NLP Analysis
-# ================================================================
-elif app_section == "📈 NLP Analysis":
-    st.markdown("<h2 class='section-header'>📈 NLP Phase-wise Analysis</h2>", unsafe_allow_html=True)
-    
-    if st.session_state.processed_data is None:
-        st.warning("⚠️ Please preprocess your data in the 'Preprocessing' section first.")
-    else:
-        processed_df = st.session_state.processed_data
-        target_col = st.session_state.target_col
-        
-        # Analysis tabs
-        tab1, tab2, tab3 = st.tabs(["📊 Distribution Analysis", "☁️ Word Clouds", "📈 Feature Analysis"])
-        
-        with tab1:
-            st.markdown("### 📊 Data Distribution Analysis")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Class distribution
-                fig = plot_class_distribution(processed_df[target_col])
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("Could not generate class distribution chart")
-            
-            with col2:
-                # Text length distribution
-                try:
-                    fig = px.histogram(
-                        processed_df, x='text_length', 
-                        color=target_col if target_col in processed_df.columns else None,
-                        title="Text Length Distribution",
-                        nbins=50,
-                        opacity=0.7
-                    )
-                    fig.update_layout(bargap=0.1)
-                    st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error creating histogram: {str(e)}")
-        
-        with tab2:
-            st.markdown("### ☁️ Word Cloud Analysis")
-            col1, col2 = st.columns(2)
-            
-            # Get classes dynamically
-            classes = processed_df[target_col].unique()
-            
-            with col1:
-                if len(classes) >= 1:
-                    class1_texts = processed_df[processed_df[target_col] == classes[0]]['cleaned_text']
-                    fig = create_wordcloud(class1_texts, f"Word Cloud - {classes[0]}")
-                    if fig:
-                        st.pyplot(fig)
-                    else:
-                        st.info(f"No sufficient text data for {classes[0]}")
-            
-            with col2:
-                if len(classes) >= 2:
-                    class2_texts = processed_df[processed_df[target_col] == classes[1]]['cleaned_text']
-                    fig = create_wordcloud(class2_texts, f"Word Cloud - {classes[1]}")
-                    if fig:
-                        st.pyplot(fig)
-                    else:
-                        st.info(f"No sufficient text data for {classes[1]}")
-        
-        with tab3:
-            st.markdown("### 📈 Feature Analysis")
-            
-            try:
-                # Most frequent words
-                all_text = ' '.join(processed_df['cleaned_text'])
-                words = all_text.split()
-                word_freq = Counter(words)
-                common_words = word_freq.most_common(20)
+                        st.metric("Total Samples", len(processed_df))
                 
-                words_df = pd.DataFrame(common_words, columns=['Word', 'Frequency'])
-                fig = px.bar(words_df, x='Frequency', y='Word', orientation='h',
-                            title="Top 20 Most Frequent Words")
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Error in feature analysis: {str(e)}")
+                with tab3:
+                    fig = plot_class_distribution(processed_df[target_col])
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
 
 # ================================================================
-# 🤖 SECTION 4: Model Training
+# 🤖 SECTION 4: Model Training (Fixed)
 # ================================================================
 elif app_section == "🤖 Model Training":
     st.markdown("<h2 class='section-header'>🤖 Machine Learning Model Training</h2>", unsafe_allow_html=True)
@@ -479,99 +525,119 @@ elif app_section == "🤖 Model Training":
         target_col = st.session_state.target_col
         vectorizer = st.session_state.vectorizer
         
-        col1, col2 = st.columns([1, 2])
+        # Data validation before training
+        validation = validate_dataset(processed_df, target_col)
         
-        with col1:
-            st.markdown("### ⚙️ Training Configuration")
+        if not validation['is_valid']:
+            st.error("❌ Dataset not suitable for training:")
+            for issue in validation['issues']:
+                st.error(issue)
             
-            if st.button("🎯 Train Models", type="primary", use_container_width=True):
-                with st.spinner("Training models... This may take a few minutes."):
-                    try:
-                        # Prepare features and labels
-                        X = vectorizer.fit_transform(processed_df['cleaned_text'])
-                        y = processed_df[target_col]
-                        
-                        # Train-test split
-                        X_train, X_test, y_train, y_test = train_test_split(
-                            X, y, test_size=test_size/100, random_state=42, stratify=y
-                        )
-                        
-                        # Train models
-                        results_df = train_and_evaluate_models(X_train, X_test, y_train, y_test, selected_models)
-                        
-                        if not results_df.empty:
-                            st.session_state.trained_models = results_df
-                            st.session_state.X_test = X_test
-                            st.session_state.y_test = y_test
-                            st.success(f"✅ Successfully trained {len(results_df)} models!")
-                        else:
-                            st.error("❌ No models were successfully trained. Please check your data and model selection.")
+            st.markdown("""
+            <div class="warning-card">
+                <h3>💡 How to fix:</h3>
+                <ul>
+                    <li>Ensure each class has at least 2 samples</li>
+                    <li>Remove rows with missing target values</li>
+                    <li>Enable 'Balance classes' in preprocessing</li>
+                    <li>Check your dataset for sufficient data</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                st.markdown("### ⚙️ Training Configuration")
+                
+                if st.button("🎯 Train Models", type="primary", use_container_width=True):
+                    with st.spinner("Training models... This may take a few minutes."):
+                        try:
+                            # Prepare features and labels
+                            X = vectorizer.fit_transform(processed_df['cleaned_text'])
+                            y = processed_df[target_col]
                             
-                    except Exception as e:
-                        st.error(f"❌ Training failed: {str(e)}")
-        
-        with col2:
-            if (st.session_state.trained_models is not None and 
-                not st.session_state.trained_models.empty):
-                
-                results_df = st.session_state.trained_models
-                
-                # Display results
-                st.markdown("### 📊 Model Performance")
-                
-                # Best model card - WITH ERROR HANDLING
-                if len(results_df) > 0:
-                    best_model = results_df.iloc[0]
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h3>🏆 Best Performing Model</h3>
-                        <p style="font-size: 1.5rem; font-weight: bold; color: #667eea;">{best_model['Model']}</p>
-                        <p style="font-size: 1.2rem;">Accuracy: <strong>{best_model['Accuracy']:.2%}</strong></p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                            # Safe train-test split
+                            X_train, X_test, y_train, y_test = safe_train_test_split(
+                                X, y, test_size=test_size/100
+                            )
+                            
+                            # Train models
+                            results_df = train_and_evaluate_models(X_train, X_test, y_train, y_test, selected_models)
+                            
+                            if not results_df.empty:
+                                st.session_state.trained_models = results_df
+                                st.session_state.X_test = X_test
+                                st.session_state.y_test = y_test
+                                st.success(f"✅ Successfully trained {len(results_df)} models!")
+                            else:
+                                st.error("❌ No models were successfully trained.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Training failed: {str(e)}")
+            
+            with col2:
+                if (st.session_state.trained_models is not None and 
+                    not st.session_state.trained_models.empty):
                     
-                    # Model comparison chart
-                    fig = px.bar(
-                        results_df, 
-                        x='Accuracy', 
-                        y='Model',
-                        orientation='h',
-                        title="Model Accuracy Comparison",
-                        color='Accuracy',
-                        color_continuous_scale='viridis'
-                    )
-                    fig.update_layout(yaxis={'categoryorder':'total ascending'})
-                    st.plotly_chart(fig, use_container_width=True)
+                    results_df = st.session_state.trained_models
                     
-                    # Detailed metrics
-                    st.markdown("### 📈 Detailed Evaluation")
-                    best_model_obj = best_model['Model_Object']
-                    y_pred = best_model['Predictions']
-                    y_test = st.session_state.y_test
+                    # Display results
+                    st.markdown("### 📊 Model Performance")
                     
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Confusion Matrix
-                        cm = confusion_matrix(y_test, y_pred)
-                        fig = px.imshow(
-                            cm,
-                            text_auto=True,
-                            color_continuous_scale='Blues',
-                            title=f"Confusion Matrix - {best_model['Model']}",
-                            labels=dict(x="Predicted", y="Actual", color="Count")
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    with col2:
-                        # Classification Report
-                        report = classification_report(y_test, y_pred, output_dict=True)
-                        report_df = pd.DataFrame(report).transpose()
-                        st.dataframe(report_df.style.format("{:.2f}").background_gradient(cmap='Blues'), use_container_width=True)
+                    if len(results_df) > 0:
+                        best_model = results_df.iloc[0]
+                        
+                        # Best model card
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <h3>🏆 Best Performing Model</h3>
+                            <p style="font-size: 1.5rem; font-weight: bold; color: #667eea;">{best_model['Model']}</p>
+                            <p style="font-size: 1.2rem;">Accuracy: <strong>{best_model['Accuracy']:.2%}</strong></p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Model comparison
+                        if len(results_df) > 1:
+                            fig = px.bar(
+                                results_df, 
+                                x='Accuracy', 
+                                y='Model',
+                                orientation='h',
+                                title="Model Accuracy Comparison",
+                                color='Accuracy',
+                                color_continuous_scale='viridis'
+                            )
+                            fig.update_layout(yaxis={'categoryorder':'total ascending'})
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Detailed evaluation (only if we have test data)
+                        if len(st.session_state.y_test) > 0:
+                            st.markdown("### 📈 Detailed Evaluation")
+                            y_pred = best_model['Predictions']
+                            y_test = st.session_state.y_test
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                cm = confusion_matrix(y_test, y_pred)
+                                fig = px.imshow(
+                                    cm,
+                                    text_auto=True,
+                                    color_continuous_scale='Blues',
+                                    title=f"Confusion Matrix - {best_model['Model']}",
+                                    labels=dict(x="Predicted", y="Actual", color="Count")
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with col2:
+                                report = classification_report(y_test, y_pred, output_dict=True)
+                                report_df = pd.DataFrame(report).transpose()
+                                st.dataframe(report_df.style.format("{:.2f}"), use_container_width=True)
+                    else:
+                        st.warning("No models were successfully trained.")
                 else:
-                    st.warning("No models were successfully trained.")
-            else:
-                st.info("🎯 Click 'Train Models' to start training your selected models.")
+                    st.info("🎯 Click 'Train Models' to start training your selected models.")
 
 # ================================================================
 # 🧪 SECTION 5: Prediction
@@ -585,9 +651,8 @@ elif app_section == "🧪 Prediction":
     else:
         results_df = st.session_state.trained_models
         
-        # Check if we have a best model
         if len(results_df) == 0:
-            st.error("❌ No trained models available. Please train models first.")
+            st.error("❌ No trained models available.")
         else:
             best_model = results_df.iloc[0]
             vectorizer = st.session_state.vectorizer
@@ -606,17 +671,12 @@ elif app_section == "🧪 Prediction":
                 if st.button("🔍 Analyze Text", type="primary", use_container_width=True) and user_text.strip():
                     with st.spinner("Analyzing text..."):
                         try:
-                            # Preprocess input text
                             cleaned_text = clean_text(user_text)
-                            
-                            # Vectorize
                             X_input = vectorizer.transform([cleaned_text])
                             
-                            # Make prediction
                             prediction = best_model['Model_Object'].predict(X_input)[0]
                             probability = best_model['Model_Object'].predict_proba(X_input)[0]
                             
-                            # Store results
                             st.session_state.prediction = prediction
                             st.session_state.probability = probability
                             st.session_state.cleaned_text = cleaned_text
@@ -628,16 +688,11 @@ elif app_section == "🧪 Prediction":
                 if 'prediction' in st.session_state:
                     prediction = st.session_state.prediction
                     probability = st.session_state.probability
-                    cleaned_text = st.session_state.cleaned_text
                     
                     st.markdown("### 📊 Prediction Results")
                     
-                    # Prediction card
                     confidence = max(probability)
                     predicted_class = prediction
-                    
-                    # Get class names from the model
-                    model_classes = best_model['Model_Object'].classes_
                     
                     if predicted_class == 1 or str(predicted_class).lower() in ['fake', 'false']:
                         st.markdown(f"""
@@ -668,8 +723,6 @@ elif app_section == "🧪 Prediction":
                                 color='Probability', color_continuous_scale='RdYlGn',
                                 title="Class Probability Distribution")
                     st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("🔍 Enter text and click 'Analyze Text' to get predictions")
 
 # ================================================================
 # 📝 Footer
